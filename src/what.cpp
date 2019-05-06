@@ -116,6 +116,30 @@ void print_output(char *filename, char *ptr, off_t filesize)
 	print_what_strings(ptr+filesize);
 }
 
+/* As per mmap manual
+   offset must be a multiple of the page size as
+   returned by sysconf(_SC_PAGE_SIZE)
+*/
+off_t make_page_aligned(off_t filestart)
+{
+	if (0 == filestart) return filestart;
+	off_t aligned = filestart;
+	off_t diff    = 0;
+#ifdef __linux__
+	long page_sz = sysconf(_SC_PAGESIZE);
+#elif __freebsd__
+	int page_sz  = getpagesize();
+#endif
+	//std::cout << "Page size : " << page_sz << std::endl;
+	if (filestart < page_sz) aligned = 0;
+	else {
+		diff 		= filestart % page_sz;
+		aligned 	= filestart - diff;
+	}
+	//std::cout << "Start aligned : " << aligned  << " diff : " << diff << std::endl;
+	return aligned;
+}
+
 void process_input_file(char *filename, off_t filestart, off_t filesize)
 {
 	//std::cout << "File size : " << filesize << std::endl;
@@ -124,12 +148,23 @@ void process_input_file(char *filename, off_t filestart, off_t filesize)
 		std::cout << "Error: Failed to open file : " << filename << " : " << strerror(errno) << std::endl;
 		exit(1);
 	}
-	char *ptr = (char *)mmap(0, filesize, PROT_READ, MAP_SHARED, fd, filestart);
-	if (ptr == MAP_FAILED) {
+
+	off_t aligned_filestart = make_page_aligned(filestart);
+	off_t aligned_diff 		= 0;
+	off_t fixed_filesize 	= filesize;
+	if (aligned_filestart && aligned_filestart != filestart) {
+		aligned_diff 		= filestart - aligned_filestart;
+		fixed_filesize    	= filesize + aligned_diff;
+		if (fixed_filesize > filesize) {
+			fixed_filesize  = filesize;
+		}
+	}
+	char *aligned_ptr = (char *)mmap(0, fixed_filesize, PROT_READ, MAP_SHARED, fd, aligned_filestart);
+	if (aligned_ptr == MAP_FAILED) {
 		std::cout << "Error: Failed to mmap file : " << filename << " : " << strerror(errno) << std::endl;
 		exit(1);
 	}
-
+	char *ptr = aligned_ptr + aligned_diff;
 	// Create more than one thread only if filesize > MAX_DATA
 	unsigned int num_jobs = 1;
 	if (filesize > MAX_DATA) num_jobs    = filesize / MAX_DATA;
@@ -152,7 +187,7 @@ void process_input_file(char *filename, off_t filestart, off_t filesize)
 					}
 				);
 	print_output(filename, ptr, filesize);
-	munmap(ptr, filesize);
+	munmap(aligned_ptr, fixed_filesize);
 	close(fd);
 }
 
@@ -219,17 +254,21 @@ int main(int argc, char *argv[])
 			std::cout << "Error: Failed to open file " << filename << std::endl;
 			exit(1);
 		} else {
-			if (LLONG_MAX == end) end = st.st_size;
-			else if (end < 0) {
-				end = st.st_size;
+			// start & end can't be negative, -o & -v option throws error
+			if (start > st.st_size) start = 0;
+			if (LLONG_MAX == end) {
+				if (start == 0)
+					end = st.st_size;
+				else
+					end = st.st_size - start;
 			} else if (0 == end) {
 				return 0;
 			} else if (end > st.st_size) {
-				end = st.st_size;
+				if (start == 0)
+					end = st.st_size;
+				else
+					end = st.st_size - start;
 			}
-
-			if (start >= st.st_size) start = 0;
-			else if (start < 0) start = 0;
 
 			process_input_file(filename, start, end);
 		}
