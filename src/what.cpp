@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <thread>
 #include <mutex>
+#include <string.h>
+#include <limits.h>
 
 /* 128 KB */
 #define MAX_DATA  131072
@@ -88,7 +90,7 @@ void search_what_strings(char *file_ptr, off_t start_pos, off_t filesize)
 
 	while (begin < end) {
 		size_t size 	= end - begin;
-		char *what_ptr  = (char *)std::memchr(begin, '@', size);
+		char *what_ptr  = (char *) memchr(begin, '@', size);
 		if (NULL == what_ptr) return;
 		if ( (*(what_ptr + 0) == '@') &&
 			(*(what_ptr + 1) == '(') &&

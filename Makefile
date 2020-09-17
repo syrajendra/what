@@ -14,7 +14,7 @@ else
 endif
 
 
-LDFLAGS 	=
+LDFLAGS     = -lpthread
 VPATH       = src
 
 SOURCES		= src/what.cpp
