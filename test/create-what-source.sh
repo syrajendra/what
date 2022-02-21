@@ -10,10 +10,10 @@ if [ $# = 1 ]; then
 		exit 1
 	fi
 	DATE=$(date '+%Y%m%d')
-  	FDATE=$(date '+%F %T %Z')
+  FDATE=$(date '+%F %T %Z')
 	src_name=${PKG}_what.cpp
 	HOST=$(hostname -f)
-  	RELEASE="1.0-$DATE"
+ 	RELEASE="1.0-$DATE"
 	line1="volatile const char __attribute__ ((section(\".data\"))) what_line1[] = \"@(#) $CPKG release $RELEASE built by $USER on $FDATE\";"
 	line2="volatile const char __attribute__ ((section(\".data\"))) what_line2[] = \"@(#) $HOST:$PKG_PATH\";"
 	echo $line1  > $PKG_PATH/$src_name
