@@ -15,12 +15,16 @@
 
 /* 128 KB */
 #define MAX_DATA  131072
+#define MAX_MAP_SIZE 1024
 
 static std::mutex g_pos_mutex;
 static std::mutex g_wsp_mutex;
 static std::mutex g_sp_mutex;
 static std::vector<char *> what_str_positions;
+static std::map<char *, std::string> str_positions;
 static off_t cur_ptr = 0;
+static struct stat st;
+static int found  = 0;
 
 off_t get_job(off_t filesize)
 {
@@ -48,13 +52,79 @@ unsigned int get_num_bytes(char *start, char *end)
 	return ptr - start;
 }
 
-bool has_newline(char *pos)
+void print_strings()
 {
-	unsigned int i;
-	for (i=0; pos[i] != '\0' && pos[i] != '\n'; i++);
-	if (pos[i] == '\0' && pos[i+1] == '\n') return true;
-	if (pos[i] == '\n' && pos[i+1] == '\0') return true;
-	return false;
+  for (auto i : str_positions)
+    std::cout << i.second << std::endl;
+}
+
+void store_str_position(char *begin, char *b)
+{
+  std::lock_guard<std::mutex> lock(g_sp_mutex);
+  str_positions.insert(std::make_pair(begin, std::string(b)));
+  if (str_positions.size() > MAX_MAP_SIZE) {
+    print_strings();
+    str_positions.clear();
+  }
+}
+
+#define STRINGS_MAX 1024
+#define GNU_STRINGS_COMPAT
+#define STRINGS_MIN 9
+void search_strings(char *file_ptr, off_t start_pos, off_t filesize)
+{
+  char b[STRINGS_MAX];
+  b[STRINGS_MAX-1] = '\0';
+  size_t i = 0;
+  int dump = 0;
+  int c;
+  char *begin = file_ptr + start_pos;
+  char *end   = begin    + MAX_DATA;
+  if (end > (file_ptr + filesize))
+    end   = file_ptr + filesize;
+
+  while (begin < end) {
+    c = *begin;
+    if (c == 0) {
+      if (!dump && i > STRINGS_MIN) {
+	b[i] = 0;
+	//puts(&b[0]);
+        store_str_position(begin, &b[0]);
+      }
+      i = 0;
+      dump = 0;
+    } else if (((c >= 0x20) && (c <= 0x7E)) || (c == 0x09)) {
+      b[i] = c;
+      i++;
+      if (i == STRINGS_MAX-1) {
+	i = 0;
+	dump = 1;
+      }
+    } else {
+#ifdef GNU_STRINGS_COMPAT
+      /* also catches non null terminated strings */
+      if (!dump && i > STRINGS_MIN) {
+	b[i] = 0;
+	//puts(&b[0]);
+        store_str_position(begin, &b[0]);
+      }
+#endif
+      i = 0;
+      dump = 0;
+    }
+    begin++;
+  } /* while */
+}
+
+bool has_newline(std::string pos, off_t &index)
+{
+  unsigned int i;
+  for (i=0; pos[i] != '\0' && pos[i] != '\n'; i++);
+  if ((pos[i] == '\0' && pos[i+1] == '\n') || (pos[i] == '\n')) {
+     index = i;
+     return true;
+  }
+  return false;
 }
 
 void print_what_strings(char *end)
@@ -63,15 +133,22 @@ void print_what_strings(char *end)
 	what_str_positions.erase( unique( what_str_positions.begin(),
 										what_str_positions.end() ),
 										 what_str_positions.end() );
-	for(unsigned int i = 0; i != what_str_positions.size(); i++) {
-		char *pos = what_str_positions[i];
-		// skip @(#)
-		pos = pos + 4;
-		if (has_newline(pos))
-			printf("\t%s", pos);
-		else
-			printf("\t%s\n", pos);
-	}
+  off_t index;
+  for(unsigned int i = 0; i != what_str_positions.size(); i++) {
+    std::string pos = what_str_positions[i];
+    // skip @(#)
+    index = 0;
+    pos = pos.substr(4,-1);
+    if (has_newline(pos, index)) {
+       if (index > 0)
+          pos= pos.substr(0,index + 1);
+      std::cout<<"\t"<<pos;
+      found = 1;
+    } else {
+      std::cout<<"\t"<<pos<<std::endl;
+      found = 1;
+    }
+  }
 	//std::cout << "Total : " << what_str_positions.size() << std::endl;
 }
 
@@ -90,7 +167,7 @@ void search_what_strings(char *file_ptr, off_t start_pos, off_t filesize)
 
 	while (begin < end) {
 		size_t size 	= end - begin;
-		char *what_ptr  = (char *) memchr(begin, '@', size);
+		char *what_ptr  = (char *)memchr(begin, '@', size-1);
 		if (NULL == what_ptr) return;
 		if ( (*(what_ptr + 0) == '@') &&
 			(*(what_ptr + 1) == '(') &&
@@ -108,14 +185,13 @@ void worker(char *ptr, off_t filesize)
 	while (1) {
 		start_pos = get_job(filesize);
 		if (-1 == start_pos) return;
-		search_what_strings(ptr, start_pos, filesize);
+    search_what_strings(ptr, start_pos, filesize);
 	}
 }
 
-void print_output(char *filename, char *ptr, off_t filesize)
+void print_output(char *ptr, off_t filesize)
 {
-	printf("%s:\n", filename);
-	print_what_strings(ptr+filesize);
+    print_what_strings(ptr+filesize);
 }
 
 /* As per mmap manual
@@ -129,7 +205,7 @@ off_t make_page_aligned(off_t filestart)
 	off_t diff    = 0;
 #ifdef __linux__
 	long page_sz = sysconf(_SC_PAGESIZE);
-#elif __freebsd__
+#elif __FreeBSD__
 	int page_sz  = getpagesize();
 #endif
 	//std::cout << "Page size : " << page_sz << std::endl;
@@ -150,23 +226,24 @@ void process_input_file(char *filename, off_t filestart, off_t filesize)
 		std::cout << "Error: Failed to open file : " << filename << " : " << strerror(errno) << std::endl;
 		exit(1);
 	}
-
 	off_t aligned_filestart = make_page_aligned(filestart);
 	off_t aligned_diff 		= 0;
-	off_t fixed_filesize 	= filesize;
-	if (aligned_filestart && aligned_filestart != filestart) {
+	off_t mmap_filesize 	= filesize;
+	if (aligned_filestart != filestart) {
 		aligned_diff 		= filestart - aligned_filestart;
-		fixed_filesize    	= filesize + aligned_diff;
-		if (fixed_filesize > filesize) {
-			fixed_filesize  = filesize;
+    mmap_filesize    	= filesize + aligned_diff;
+    if (aligned_filestart + mmap_filesize > st.st_size) {
+      mmap_filesize  = st.st_size - aligned_filestart;
 		}
 	}
-	char *aligned_ptr = (char *)mmap(0, fixed_filesize, PROT_READ, MAP_SHARED, fd, aligned_filestart);
+
+	char *aligned_ptr = (char *)mmap(0, mmap_filesize, PROT_READ, MAP_SHARED, fd, aligned_filestart);
 	if (aligned_ptr == MAP_FAILED) {
 		std::cout << "Error: Failed to mmap file : " << filename << " : " << strerror(errno) << std::endl;
 		exit(1);
 	}
-	char *ptr = aligned_ptr + aligned_diff;
+
+	char *start_ptr = aligned_ptr + aligned_diff;
 	// Create more than one thread only if filesize > MAX_DATA
 	unsigned int num_jobs = 1;
 	if (filesize > MAX_DATA) num_jobs    = filesize / MAX_DATA;
@@ -181,15 +258,15 @@ void process_input_file(char *filename, off_t filestart, off_t filesize)
 
 	/* Create threads */
 	for (unsigned int i=0; i<num_threads; i++) {
-		thread_objs[i] = std::thread(worker, ptr, filesize);
+		thread_objs[i] = std::thread(worker, start_ptr, filesize);
 	}
 	/* Wait for all threads to complete */
 	std::for_each(thread_objs.begin(), thread_objs.end(), [](std::thread &th) {
 						th.join();
 					}
 				);
-	print_output(filename, ptr, filesize);
-	munmap(aligned_ptr, fixed_filesize);
+	print_output(start_ptr, filesize);
+	munmap(aligned_ptr, mmap_filesize);
 	close(fd);
 }
 
