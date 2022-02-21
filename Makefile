@@ -2,17 +2,13 @@ EXE_NAME 	= what
 BIN 		= bin
 INCLUDES 	= -Iinc
 DEBUG 		= -g2
-CXXFLAGS 	= -O2 -c $(DEBUG) $(INCLUDES) -Wall -std=c++11
+#ifeq ($(CXX), g++)
+STDFLAG = -std=gnu++11
+#else
+STDFLAG = -std=c++11
+#endif
+CXXFLAGS 	= -O2 -c $(DEBUG) $(INCLUDES) -Wall $(STDFLAG)
 MKDIR 		= mkdir
-
-ifeq ($(CXX), g++)
-  $(error gcc compiler not supported)
-else ifeq ($(CXX), clang++)
-  CXXFLAGS +=
-else
-  $(error unknown compiler)
-endif
-
 
 LDFLAGS     = -lpthread
 VPATH       = src
